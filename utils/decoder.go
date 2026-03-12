@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html"
+	"net/url"
 )
 
 func DecodeAdLink(encodedStr string) (string, error) {
@@ -93,4 +94,21 @@ func DecodeStarckDataU(dataU string) (string, error) {
 
 func IsMagnetLink(link string) bool {
 	return len(link) > 8 && link[:8] == "magnet:?"
+}
+
+// DecodeBludvAdwareLink helper function to be exported to yaml engine
+func DecodeBludvAdwareLink(raw string) (string, error) {
+	parsedURL, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	id := parsedURL.Query().Get("id")
+	decoded, err := DecodeAdLink(id)
+	if err != nil {
+		return "", err
+	}
+	if !IsMagnetLink(decoded) {
+		return "", fmt.Errorf("not a magnet link: %s", decoded)
+	}
+	return decoded, nil
 }
