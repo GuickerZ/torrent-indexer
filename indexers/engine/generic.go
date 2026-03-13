@@ -220,9 +220,17 @@ func (g *genericEngine) buildURL(q, page string) string {
 	return base + strings.ReplaceAll(g.def.SearchPattern, "{query}", url.QueryEscape(q))
 }
 
+// resolveURL resolves a possibly relative href against the base URL of the indexer.
+func resolveURL(base, href string) string {
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(href, "/")
+}
+
 // extractTorrentsFromPage fetches a detail page and extracts torrent entries.
 func (g *genericEngine) extractTorrentsFromPage(ctx context.Context, link, referer string) ([]schema.IndexedTorrent, error) {
-	resp, err := g.req.GetDocument(ctx, link, referer)
+	resp, err := g.req.GetDocument(ctx, resolveURL(g.def.URL, link), referer)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +241,7 @@ func (g *genericEngine) extractTorrentsFromPage(ctx context.Context, link, refer
 		return nil, err
 	}
 
-	return g.extractTorrentsFromDoc(ctx, doc.Selection, link), nil
+	return g.extractTorrentsFromDoc(ctx, doc.Selection, resolveURL(g.def.URL, link)), nil
 }
 
 // extractTorrentsFromDoc is the shared core that works on any *goquery.Selection

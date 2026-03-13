@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"time"
 
@@ -75,8 +77,6 @@ func main() {
 	if err == nil {
 		logging.Info().Dur("expiration", longLivedCacheExpiration).Msg("Setting long-lived cache expiration")
 		redis.SetDefaultExpiration(longLivedCacheExpiration)
-	} else {
-		logging.Error().Err(err).Msg("Failed to parse long-lived cache expiration")
 	}
 
 	icfg := handler.IndexersConfig{
@@ -88,8 +88,6 @@ func main() {
 
 	indexerMux := http.NewServeMux()
 	metricsMux := http.NewServeMux()
-
-	indexerMux.HandleFunc("/", handler.HandlerIndex)
 
 	// build the indexer registry
 	reg := engine.NewRegistry()
@@ -111,10 +109,13 @@ func main() {
 	}
 
 	// mount all registered engines under /indexers/<id>.
-	for id, e := range reg.All() {
+	engines := reg.All()
+	for id, e := range engines {
 		id, e := id, e // capture loop vars
 		indexerMux.HandleFunc(fmt.Sprintf("/indexers/%s", id), e.Handler())
 	}
+
+	indexerMux.HandleFunc("/", handler.HandlerIndex(slices.Collect(maps.Keys(engines))))
 
 	indexerMux.HandleFunc("/search", search.SearchTorrentHandler)
 	indexerMux.HandleFunc("/search/health", search.HealthHandler)
