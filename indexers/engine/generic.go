@@ -34,6 +34,12 @@ type FieldSelectorItem struct {
 	// Regex applied to the extracted value; first capture group is returned.
 	// If there is no capture group the full match is returned.
 	Regex string `yaml:"regex,omitempty"`
+	// MatchAll controls whether the regex is applied globally (FindAll) so that
+	// multiple matches within a single node are all returned. When false (the
+	// default) only the first match is returned per node.
+	// Example use-case: a single <p> containing "2.1 GB / 8.3 GB" with a size
+	// regex and match_all: true yields ["2.1 GB", "8.3 GB"].
+	MatchAll bool `yaml:"match_all,omitempty"`
 	// Mappings is an ordered list of pattern→value pairs used for enum-style
 	// fields like audio. Each pattern is tested against the extracted text; the
 	// value of the first match is returned. When Mappings is set, Regex is
@@ -267,6 +273,9 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 	// indirect patterns like opensubtitles "imdbid-NNNNN" are resolved.
 	imdbRaw := extractScalarField(sel, fields["imdb"])
 	imdbLink, _ := handler.GetIMDBLink(imdbRaw)
+	if imdbLink == "" {
+		logging.Debug().Str("imdb_raw", imdbRaw).Msg("Failed to extract IMDB link from raw value")
+	}
 
 	// extract audio info using both built-in patterns and custom mappings
 	audioTexts := extractSliceField(sel, fields["audio"])
@@ -297,8 +306,11 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 	}
 	audio = utils.DeduplicateAudio(audio)
 
-	sizeText := extractScalarField(sel, fields["size"])
+	sizeText := strings.Join(extractSliceField(sel, fields["size"]), " ")
 	sizes := utils.StableUniq(handler.FindSizesFromText(sizeText))
+	if len(sizes) == 0 {
+		logging.Debug().Str("size_text", sizeText).Strs("sizes", sizes).Msg("No sizes extracted from text")
+	}
 
 	// magnet_link: collect ALL hrefs from ALL selector items (plain + encoded).
 	var magnetLinks []string
@@ -356,6 +368,20 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 			var mySize string
 			if len(sizes) == len(magnetLinks) {
 				mySize = sizes[it]
+			} else if (len(sizes) - 1) == len(magnetLinks) {
+				// if there's one more size than magnet links, ignore the first size (assumed to be a general one for the whole release) and assign the rest in order.
+				mySize = sizes[it+1]
+			} else {
+				// mismatch with magnets: we have to assign sizes in order, but the page structure doesn't allow us to be sure which size belongs to which magnet. In this case we assign sizes in order but also trigger async metadata fetches for all magnets to populate the cache as soon as possible.
+				logging.Debug().
+					Str("size_text", sizeText).
+					Strs("sizes", sizes).
+					Int("num_sizes", len(sizes)).
+					Int("num_magnets", len(magnetLinks)).
+					Msg("Number of sizes does not match number of magnet links")
+				if mySize == "" {
+					logging.Debug().Str("info_hash", infoHash).Msg("This magnet link has no assigned size due to mismatch;")
+				}
 			}
 			if mySize == "" && g.magnetAPI != nil {
 				go func() { _, _ = g.magnetAPI.FetchMetadata(ctx, magnetLink) }()
@@ -406,44 +432,21 @@ func hasMappings(fs FieldSelector) bool {
 // extractSingleItem extracts a string value from the given selection using one
 // FieldSelectorItem: find the element → read attr or text → apply regex → apply
 // parse_function. Text is always whitespace-normalised.
+// Delegates to extractAllMatchesFromNode and returns the first result.
 func extractSingleItem(s *goquery.Selection, item FieldSelectorItem) string {
 	sel := s
 	if item.Selector != "" {
 		sel = s.Find(item.Selector)
 	}
-
-	var val string
-	if item.Attr != "" {
-		val, _ = sel.Attr(item.Attr)
-		val = strings.TrimSpace(val)
-	} else {
-		val = strings.TrimSpace(whitespaceRe.ReplaceAllString(sel.Text(), " "))
-	}
-
-	if item.Regex != "" && val != "" {
-		re, err := regexp.Compile(item.Regex)
-		if err == nil {
-			if m := re.FindStringSubmatch(val); len(m) > 1 {
-				val = strings.TrimSpace(m[1])
-			} else if m := re.FindString(val); m != "" {
-				val = strings.TrimSpace(m)
-			} else {
-				val = ""
-			}
+	var result string
+	sel.EachWithBreak(func(_ int, node *goquery.Selection) bool {
+		if vals := extractAllMatchesFromNode(node, item); len(vals) > 0 {
+			result = vals[0]
+			return false // stop at first non-empty node
 		}
-	}
-
-	if item.ParseFunction != "" && val != "" {
-		if fn, ok := parseFuncRegistry[item.ParseFunction]; ok {
-			if transformed, err := fn(val); err == nil {
-				val = transformed
-			}
-		} else if item.ParseFunction != "" {
-			logging.Warn().Str("function", item.ParseFunction).Msg("Unknown parse function specified in FieldSelectorItem")
-		}
-	}
-
-	return val
+		return true
+	})
+	return result
 }
 
 // extractMappingsFromText returns all mapping values whose patterns match text.
@@ -510,6 +513,60 @@ func extractIntField(s *goquery.Selection, fs FieldSelector) int {
 	return v
 }
 
+// extractAllMatchesFromNode returns every regex capture-group-1 match found
+// within a single node's text (or attribute). When no regex is set the raw
+// text is returned as a single-element slice. ParseFunction is applied to
+// every match individually.
+func extractAllMatchesFromNode(node *goquery.Selection, item FieldSelectorItem) []string {
+	var raw string
+	if item.Attr != "" {
+		raw, _ = node.Attr(item.Attr)
+	} else {
+		raw = whitespaceRe.ReplaceAllString(node.Text(), " ")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	var candidates []string
+	if item.Regex != "" {
+		re, err := regexp.Compile(item.Regex)
+		if err != nil {
+			return nil
+		}
+		if item.MatchAll {
+			for _, m := range re.FindAllStringSubmatch(raw, -1) {
+				if len(m) > 1 && m[1] != "" {
+					candidates = append(candidates, strings.TrimSpace(m[1]))
+				}
+			}
+		} else {
+			if m := re.FindStringSubmatch(raw); len(m) > 1 && m[1] != "" {
+				candidates = append(candidates, strings.TrimSpace(m[1]))
+			}
+		}
+	} else {
+		candidates = []string{raw}
+	}
+
+	if item.ParseFunction == "" {
+		return candidates
+	}
+	fn, ok := parseFuncRegistry[item.ParseFunction]
+	if !ok {
+		logging.Warn().Str("function", item.ParseFunction).Msg("Unknown parse function specified in FieldSelectorItem")
+		return candidates
+	}
+	var results []string
+	for _, c := range candidates {
+		if transformed, err := fn(c); err == nil && transformed != "" {
+			results = append(results, transformed)
+		}
+	}
+	return results
+}
+
 // extractSliceField iterates ALL FieldSelectorItems and for each one finds ALL
 // matching elements, collecting every non-empty result. Used for fields that
 // return multiple values: magnet_link (multiple magnets per post), audio.
@@ -521,13 +578,7 @@ func extractSliceField(s *goquery.Selection, fs FieldSelector) []string {
 			sel = s.Find(item.Selector)
 		}
 		sel.Each(func(_ int, node *goquery.Selection) {
-			// Use a copy of item with no Selector so extractSingleItem operates
-			// on the already-found node directly.
-			itemCopy := item
-			itemCopy.Selector = ""
-			if val := extractSingleItem(node, itemCopy); val != "" {
-				results = append(results, val)
-			}
+			results = append(results, extractAllMatchesFromNode(node, item)...)
 		})
 	}
 	return results
@@ -545,8 +596,9 @@ func extractDateField(sel *goquery.Selection, fs FieldSelector) time.Time {
 	// Use extractScalarField so fallback items are tried automatically.
 	raw := extractScalarField(sel, fs)
 	if raw == "" {
-		return time.Time{}
+		return handler.GetPublishedDateFromMeta(&goquery.Document{Selection: sel})
 	}
+	logging.Debug().Str("raw_date", raw).Msg("Extracted raw date string")
 
 	// Collect the Format from whichever item matched (first non-empty).
 	var format string
@@ -565,7 +617,7 @@ func extractDateField(sel *goquery.Selection, fs FieldSelector) time.Time {
 			return t.UTC()
 		}
 	}
-	return time.Time{}
+	return handler.GetPublishedDateFromMeta(&goquery.Document{Selection: sel})
 }
 
 // extractFilesField collects all file entries using FilesConfig.
