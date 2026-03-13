@@ -1,6 +1,3 @@
-# Base definition for the "bludv-style" WordPress theme shared by multiple sites.
-# Other definitions can use `extends: example` to inherit these selectors.
-#
 # This definition is NOT registered as an active indexer (no route will be
 # created for it) because its URL is empty. It exists purely as a base template.
 id: example
