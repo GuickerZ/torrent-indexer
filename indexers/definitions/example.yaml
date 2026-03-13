@@ -1,0 +1,38 @@
+# Base definition for the "bludv-style" WordPress theme shared by multiple sites.
+# Other definitions can use `extends: example` to inherit these selectors.
+#
+# This definition is NOT registered as an active indexer (no route will be
+# created for it) because its URL is empty. It exists purely as a base template.
+id: example
+label: example
+url: ""
+search_url: ""
+page_pattern: ""
+
+selectors:
+  item: ".post"
+  fields:
+    post_url:
+      - selector: "div.title > a"
+        attr: "href"
+
+  detail_page:
+    enabled: true
+    fields:
+      title:
+        - selector: ".title > h1"
+        - selector: "div.fallback-title h1"
+      audio:
+        - selector: "div.content p"
+      year:
+        - selector: "div.content p"
+          regex: "(?:Year):\\s*(\\d{4})"
+      size:
+        - selector: "div.content p"
+          regex: "(\\d+(?:[.,]\\d+)?\\s*(?:GB|MB))"
+      magnet_link:
+        - selector: "a[href^='magnet']"
+          attr: "href"
+      imdb:
+        - selector: "div.content a[href*='imdb.com']"
+          attr: "href"

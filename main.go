@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -8,6 +9,8 @@ import (
 
 	handler "github.com/felipemarinho97/torrent-indexer/api"
 	"github.com/felipemarinho97/torrent-indexer/cache"
+	"github.com/felipemarinho97/torrent-indexer/indexers/custom"
+	"github.com/felipemarinho97/torrent-indexer/indexers/engine"
 	"github.com/felipemarinho97/torrent-indexer/logging"
 	"github.com/felipemarinho97/torrent-indexer/magnet"
 	"github.com/felipemarinho97/torrent-indexer/monitoring"
@@ -87,13 +90,32 @@ func main() {
 	metricsMux := http.NewServeMux()
 
 	indexerMux.HandleFunc("/", handler.HandlerIndex)
-	indexerMux.HandleFunc("/indexers/bludv", indexers.HandlerBluDVIndexer)
-	indexerMux.HandleFunc("/indexers/comando_torrents", indexers.HandlerComandoIndexer)
-	indexerMux.HandleFunc("/indexers/rede_torrent", indexers.HandlerRedeTorrentIndexer)
-	indexerMux.HandleFunc("/indexers/starck-filmes", indexers.HandlerStarckFilmesIndexer)
-	indexerMux.HandleFunc("/indexers/torrent-dos-filmes", indexers.HandlerTorrentDosFilmesIndexer)
-	indexerMux.HandleFunc("/indexers/vaca_torrent", indexers.HandlerVacaTorrentIndexer)
-	indexerMux.HandleFunc("/indexers/manual", indexers.HandlerManualIndexer)
+
+	// build the indexer registry
+	reg := engine.NewRegistry()
+	custom.RegisterCustomIndexers(reg, indexers)
+
+	// load YAML indexers from definitions
+	yamlDir := "indexers/definitions"
+	if v := os.Getenv("INDEXER_DEFINITIONS_DIR"); v != "" {
+		yamlDir = v
+	}
+	engineInstances, err := engine.LoadFromDir(yamlDir, indexers, redis, metrics, req, searchIndex, magnetMetadataAPI)
+	if err != nil {
+		logging.Warn().Err(err).Str("dir", yamlDir).Msg("Could not load YAML indexer definitions")
+	} else {
+		for _, e := range engineInstances {
+			reg.Register(e)
+			logging.Info().Str("id", e.ID()).Msg("Registered YAML indexer")
+		}
+	}
+
+	// mount all registered engines under /indexers/<id>.
+	for id, e := range reg.All() {
+		id, e := id, e // capture loop vars
+		indexerMux.HandleFunc(fmt.Sprintf("/indexers/%s", id), e.Handler())
+	}
+
 	indexerMux.HandleFunc("/search", search.SearchTorrentHandler)
 	indexerMux.HandleFunc("/search/health", search.HealthHandler)
 	indexerMux.HandleFunc("/search/stats", search.StatsHandler)
