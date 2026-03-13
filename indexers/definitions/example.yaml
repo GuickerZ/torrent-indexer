@@ -22,12 +22,6 @@ selectors:
       - selector: "div.title > a"
         # attr: optional - html attribute to read (omit to use text content)
         attr: "href"
-    # seeds: optional - if omitted (with peers), tracker scraping will be performed automatically
-    seeds:
-      - selector: "td.seeds"
-    # peers: optional - if omitted (with seeds), tracker scraping will be performed automatically
-    peers:
-      - selector: "td.peers"
 
   detail_page:
     # enabled: required - set to false to extract everything from the listing page
@@ -68,6 +62,14 @@ selectors:
         - selector: "div.content span.date"
           # format: optional - Go time.Parse layout for date fields
           format: "2006-01-02"
+
+      # seeds: optional - if omitted (with peers), tracker scraping will be performed automatically
+      seeds:
+        - selector: "td.seeds"
+      # peers: optional - if omitted (with seeds), tracker scraping will be performed automatically
+      peers:
+        - selector: "td.peers"
+
     # files: optional - extracts a file list from the detail page
     files:
       # selector: required (within files)
