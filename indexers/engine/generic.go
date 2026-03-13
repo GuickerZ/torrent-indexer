@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,12 +85,22 @@ type AudioPattern struct {
 	Value string `yaml:"value"`
 }
 
+// FilesConfig describes how to extract a file list from a detail page.
+// Each HTML node matched by Selector is parsed independently:
+// NameRegex captures the file name (group 1), SizeRegex captures the size (group 1).
+type FilesConfig struct {
+	Selector  string `yaml:"selector"`
+	NameRegex string `yaml:"name_regex"`
+	SizeRegex string `yaml:"size_regex"`
+}
+
 // DetailPageConfig describes the optional second-fetch (post/detail page).
 type DetailPageConfig struct {
 	// Enabled controls whether a second HTTP fetch is made for each item.
 	// When false, all fields must be extractable from the listing page itself.
 	Enabled bool                     `yaml:"enabled"`
 	Fields  map[string]FieldSelector `yaml:"fields"`
+	Files   FilesConfig              `yaml:"files"`
 }
 
 // SelectorsConfig groups all CSS selectors for a definition.
@@ -117,10 +128,6 @@ type IndexerDefinition struct {
 }
 
 var whitespaceRe = regexp.MustCompile(`\s+`)
-
-// ---------------------------------------------------------------------------
-// Engine implementation
-// ---------------------------------------------------------------------------
 
 type genericEngine struct {
 	def       IndexerDefinition
@@ -255,7 +262,6 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 	}
 
 	title := extractScalarField(sel, fields["title"])
-	year := extractScalarField(sel, fields["year"])
 
 	// Pass the raw href through GetIMDBLink so both direct imdb.com URLs and
 	// indirect patterns like opensubtitles "imdbid-NNNNN" are resolved.
@@ -303,6 +309,15 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 	}
 
 	date := extractDateField(sel, fields["date"])
+	year := extractScalarField(sel, fields["year"])
+	if year == "" && date.Year() != 0 { // time.Time zero value has Year=1
+		year = fmt.Sprintf("%d", date.Year())
+	}
+
+	files := extractFilesField(sel, g.def.Selectors.DetailPage.Files)
+
+	htmlSeeds := extractIntField(sel, fields["seeds"])
+	htmlPeers := extractIntField(sel, fields["peers"])
 
 	type result struct {
 		t   schema.IndexedTorrent
@@ -325,9 +340,15 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 			trackers := parsed.Trackers
 			magnetAudio := handler.GetAudioFromTitle(releaseTitle, audio)
 
-			peer, seed, err := goscrape.GetLeechsAndSeeds(ctx, g.redis, g.metrics, infoHash, trackers)
-			if err != nil {
-				logging.Error().Err(err).Str("info_hash", infoHash).Msg("Failed to get leechers and seeders")
+			var seed, peer int
+			if fields["seeds"] != nil && fields["peers"] != nil {
+				seed = htmlSeeds
+				peer = htmlPeers
+			} else {
+				peer, seed, err = goscrape.GetLeechsAndSeeds(ctx, g.redis, g.metrics, infoHash, trackers)
+				if err != nil {
+					logging.Error().Err(err).Str("info_hash", infoHash).Msg("Failed to get leechers and seeders")
+				}
 			}
 
 			processedTitle := handler.ProcessTitle(title, magnetAudio)
@@ -356,6 +377,7 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 					LeechCount:    peer,
 					SeedCount:     seed,
 					Size:          mySize,
+					Files:         files,
 				},
 			}
 		}()
@@ -474,6 +496,20 @@ func extractScalarField(s *goquery.Selection, fs FieldSelector) string {
 	return ""
 }
 
+// extractIntField extracts a scalar string field and parses it as a base-10
+// integer. Returns 0 if the field is absent or cannot be parsed.
+func extractIntField(s *goquery.Selection, fs FieldSelector) int {
+	raw := strings.TrimSpace(extractScalarField(s, fs))
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 // extractSliceField iterates ALL FieldSelectorItems and for each one finds ALL
 // matching elements, collecting every non-empty result. Used for fields that
 // return multiple values: magnet_link (multiple magnets per post), audio.
@@ -530,4 +566,44 @@ func extractDateField(sel *goquery.Selection, fs FieldSelector) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// extractFilesField collects all file entries using FilesConfig.
+// Each node matched by cfg.Selector is parsed with NameRegex (group 1 → Path)
+// and SizeRegex (group 1 → Size).
+func extractFilesField(sel *goquery.Selection, cfg FilesConfig) []schema.File {
+	if cfg.Selector == "" {
+		return nil
+	}
+	var nameRe, sizeRe *regexp.Regexp
+	if cfg.NameRegex != "" {
+		nameRe = regexp.MustCompile(cfg.NameRegex)
+	}
+	if cfg.SizeRegex != "" {
+		sizeRe = regexp.MustCompile(cfg.SizeRegex)
+	}
+	var files []schema.File
+	sel.Find(cfg.Selector).Each(func(_ int, node *goquery.Selection) {
+		text := strings.TrimSpace(whitespaceRe.ReplaceAllString(node.Text(), " "))
+		if text == "" {
+			return
+		}
+		var f schema.File
+		if nameRe != nil {
+			if m := nameRe.FindStringSubmatch(text); len(m) > 1 {
+				f.Path = strings.TrimSpace(m[1])
+			}
+		} else {
+			f.Path = text
+		}
+		if sizeRe != nil {
+			if m := sizeRe.FindStringSubmatch(text); len(m) > 1 {
+				f.Size = strings.TrimSpace(m[1])
+			}
+		}
+		if f.Path != "" {
+			files = append(files, f)
+		}
+	})
+	return files
 }
