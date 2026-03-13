@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +17,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LoadFromDir reads every *.yaml file in dir
-// and returns a slice of GenericEngines ready for registration.
-func LoadFromDir(
-	dir string,
+//go:embed definitions/*.yaml
+var bundledDefinitions embed.FS
+
+// Load reads all bundled definitions first, then overlays any *.yaml files
+// found in customDir (if non-empty). A file in customDir whose base name matches
+// a bundled file replaces it. Returns a slice of Engines ready for registration.
+func Load(
+	customDir string,
 	indexer *handler.Indexer,
 	redis *cache.Redis,
 	metrics *monitoring.Metrics,
@@ -26,40 +32,63 @@ func LoadFromDir(
 	si *meilisearch.SearchIndexer,
 	magnetAPI *magnet.MetadataClient,
 ) ([]Engine, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("reading indexers dir %q: %w", dir, err)
-	}
+	// Collect raw YAML bytes keyed by filename; customDir entries win.
+	files := make(map[string][]byte)
 
-	// First pass: load all raw definitions indexed by ID.
-	rawDefs := make(map[string]IndexerDefinition)
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+	// 1. Bundled definitions.
+	entries, err := fs.ReadDir(bundledDefinitions, "definitions")
+	if err != nil {
+		return nil, fmt.Errorf("reading bundled definitions: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		data, err := bundledDefinitions.ReadFile("definitions/" + e.Name())
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", entry.Name(), err)
+			return nil, fmt.Errorf("reading bundled %s: %w", e.Name(), err)
 		}
+		files[e.Name()] = data
+	}
+
+	// 2. Overlay with user-provided definitions.
+	if customDir != "" {
+		dirEntries, err := os.ReadDir(customDir)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("reading extra definitions dir %q: %w", customDir, err)
+		}
+		for _, e := range dirEntries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(customDir, e.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("reading %s: %w", e.Name(), err)
+			}
+			files[e.Name()] = data // replaces bundled definition if same filename
+		}
+	}
+
+	// Parse all collected definitions.
+	rawDefs := make(map[string]IndexerDefinition)
+	for name, data := range files {
 		var def IndexerDefinition
 		if err := yaml.Unmarshal(data, &def); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", entry.Name(), err)
+			return nil, fmt.Errorf("parsing %s: %w", name, err)
 		}
 		rawDefs[def.ID] = def
 	}
 
-	// Second pass: compile patterns, build engines.
+	// Build engines, applying env var URL overrides and skipping template definitions.
 	var engines []Engine
 	for _, def := range rawDefs {
 		resolved := def
 
-		// Allow env var override for the base URL.
 		envKey := fmt.Sprintf("INDEXER_%s_URL", strings.ToUpper(strings.ReplaceAll(resolved.ID, "-", "_")))
 		if v := os.Getenv(envKey); v != "" {
 			resolved.URL = v
 		}
 
-		// Skip base/template definitions that have no URL configured.
 		if resolved.URL == "" {
 			continue
 		}

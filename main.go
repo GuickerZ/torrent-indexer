@@ -93,14 +93,10 @@ func main() {
 	reg := engine.NewRegistry()
 	custom.RegisterCustomIndexers(reg, indexers)
 
-	// load YAML indexers from definitions
-	yamlDir := "indexers/definitions"
-	if v := os.Getenv("INDEXER_DEFINITIONS_DIR"); v != "" {
-		yamlDir = v
-	}
-	engineInstances, err := engine.LoadFromDir(yamlDir, indexers, redis, metrics, req, searchIndex, magnetMetadataAPI)
+	customDefsDir := os.Getenv("INDEXER_DEFINITIONS_DIR")
+	engineInstances, err := engine.Load(customDefsDir, indexers, redis, metrics, req, searchIndex, magnetMetadataAPI)
 	if err != nil {
-		logging.Warn().Err(err).Str("dir", yamlDir).Msg("Could not load YAML indexer definitions")
+		logging.Warn().Err(err).Str("custom_defs_dir", customDefsDir).Msg("Could not load YAML indexer definitions")
 	} else {
 		for _, e := range engineInstances {
 			reg.Register(e)
