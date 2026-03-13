@@ -15,7 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LoadFromDir reads every *.yaml file in dir, resolves `extends` references,
+// LoadFromDir reads every *.yaml file in dir
 // and returns a slice of GenericEngines ready for registration.
 func LoadFromDir(
 	dir string,
@@ -48,7 +48,7 @@ func LoadFromDir(
 		rawDefs[def.ID] = def
 	}
 
-	// Second pass: resolve extends, compile patterns, build engines.
+	// Second pass: compile patterns, build engines.
 	var engines []Engine
 	for _, def := range rawDefs {
 		resolved := def
