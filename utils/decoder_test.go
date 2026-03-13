@@ -142,3 +142,127 @@ func TestDecodeStarckDataU(t *testing.T) {
 		})
 	}
 }
+
+func TestParse1337xDate(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string // expected "2006-01-02"
+		wantErr bool
+	}{
+		{
+			name: "standard format with ordinal and short year",
+			raw:  "May. 11th '20",
+			want: "2020-05-11",
+		},
+		{
+			name: "1st ordinal",
+			raw:  "Jan. 1st '99",
+			want: "1999-01-01",
+		},
+		{
+			name: "2nd ordinal",
+			raw:  "Feb. 2nd '05",
+			want: "2005-02-02",
+		},
+		{
+			name: "3rd ordinal",
+			raw:  "Mar. 3rd '30",
+			want: "2030-03-03",
+		},
+		{
+			name: "no dot on month",
+			raw:  "Dec 25th '19",
+			want: "2019-12-25",
+		},
+		{
+			name:    "empty string",
+			raw:     "",
+			wantErr: true,
+		},
+		{
+			name:    "unparseable garbage",
+			raw:     "yesterday",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := utils.Parse1337xDate(tt.raw)
+			if err != nil {
+				if !tt.wantErr {
+					t.Errorf("Parse1337xDate(%q) unexpected error: %v", tt.raw, err)
+				}
+				return
+			}
+			if tt.wantErr {
+				t.Fatalf("Parse1337xDate(%q) succeeded unexpectedly, got %q", tt.raw, got)
+			}
+			if got != tt.want {
+				t.Errorf("Parse1337xDate(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseComandoDate(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "localized Portuguese date",
+			raw:  "10 de setembro de 2021",
+			want: "2021-09-10",
+		},
+		{
+			name: "single-digit day",
+			raw:  "1 de janeiro de 2022",
+			want: "2022-01-01",
+		},
+		{
+			name: "ISO meta tag with time zone",
+			raw:  "2021-09-10T00:00:00+00:00",
+			want: "2021-09-10",
+		},
+		{
+			name: "plain ISO date",
+			raw:  "2023-07-04",
+			want: "2023-07-04",
+		},
+		{
+			name: "december",
+			raw:  "25 de dezembro de 2020",
+			want: "2020-12-25",
+		},
+		{
+			name:    "empty string",
+			raw:     "",
+			wantErr: true,
+		},
+		{
+			name:    "garbage",
+			raw:     "ontem",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := utils.ParseComandoDate(tt.raw)
+			if err != nil {
+				if !tt.wantErr {
+					t.Errorf("ParseComandoDate(%q) unexpected error: %v", tt.raw, err)
+				}
+				return
+			}
+			if tt.wantErr {
+				t.Fatalf("ParseComandoDate(%q) succeeded unexpectedly, got %q", tt.raw, got)
+			}
+			if got != tt.want {
+				t.Errorf("ParseComandoDate(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}

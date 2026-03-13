@@ -24,6 +24,14 @@ func init() {
 	funcMappings := map[string]engine.ParseFunc{
 		"starck_data_u":     utils.DecodeStarckDataU,
 		"bludv_adware_link": utils.DecodeBludvAdwareLink,
+		"1337x_date":        utils.Parse1337xDate,
+		"comando_date": func(s string) (string, error) {
+			t, err := handler.ParseComandoDate(s)
+			if err != nil {
+				return "", err
+			}
+			return t.Format("2006-01-02T15:04:05Z"), nil
+		},
 	}
 
 	for name, fn := range funcMappings {

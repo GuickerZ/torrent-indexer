@@ -58,3 +58,7 @@ func FindYearFromText(text, title string) string {
 func GetIMDBLink(link string) (string, error) {
 	return getIMDBLink(link)
 }
+
+func ParseComandoDate(datePublished string) (time.Time, error) {
+	return parseLocalizedDate(datePublished)
+}
