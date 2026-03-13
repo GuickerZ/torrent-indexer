@@ -15,13 +15,11 @@ page_pattern: "page/{page}"
 selectors:
   # item: required - top-level list selector on the listing/search page
   item: ".post"
-  # fields: optional - extracted from each item on the listing page
-  fields:
-    # post_url: optional - url of the detail page for each item
-    post_url:
-      - selector: "div.title > a"
-        # attr: optional - html attribute to read (omit to use text content)
-        attr: "href"
+  # post_url: optional - url of the detail page for each item; required when detail_page.enabled is true
+  post_url:
+    - selector: "div.title > a"
+      # attr: optional - html attribute to read (omit to use text content)
+      attr: "href"
 
   detail_page:
     # enabled: required - set to false to extract everything from the listing page

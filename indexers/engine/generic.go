@@ -100,21 +100,35 @@ type FilesConfig struct {
 	SizeRegex string `yaml:"size_regex"`
 }
 
+// DetailPageFields holds every extractable field on a post/detail page.
+type DetailPageFields struct {
+	Title      FieldSelector `yaml:"title"`
+	Year       FieldSelector `yaml:"year"`
+	Audio      FieldSelector `yaml:"audio"`
+	Size       FieldSelector `yaml:"size"`
+	MagnetLink FieldSelector `yaml:"magnet_link"`
+	IMDB       FieldSelector `yaml:"imdb"`
+	Date       FieldSelector `yaml:"date"`
+	Seeds      FieldSelector `yaml:"seeds"`
+	Peers      FieldSelector `yaml:"peers"`
+}
+
 // DetailPageConfig describes the optional second-fetch (post/detail page).
 type DetailPageConfig struct {
 	// Enabled controls whether a second HTTP fetch is made for each item.
 	// When false, all fields must be extractable from the listing page itself.
-	Enabled bool                     `yaml:"enabled"`
-	Fields  map[string]FieldSelector `yaml:"fields"`
-	Files   FilesConfig              `yaml:"files"`
+	Enabled bool             `yaml:"enabled"`
+	Fields  DetailPageFields `yaml:"fields"`
+	Files   FilesConfig      `yaml:"files"`
 }
 
 // SelectorsConfig groups all CSS selectors for a definition.
 type SelectorsConfig struct {
 	// Item is the top-level list selector on the listing/search page.
 	Item string `yaml:"item"`
-	// Fields are extracted from each Item on the listing page.
-	Fields map[string]FieldSelector `yaml:"fields"`
+	// PostURL is the selector for the detail page URL of each item.
+	// Required when detail_page.enabled is true.
+	PostURL FieldSelector `yaml:"post_url"`
 	// DetailPage configures extraction from the individual post page.
 	DetailPage DetailPageConfig `yaml:"detail_page"`
 }
@@ -185,7 +199,7 @@ func (g *genericEngine) Handler() http.HandlerFunc {
 		if g.def.Selectors.DetailPage.Enabled {
 			// fetch all detail pages and extract from them
 			var links []string
-			postURLSel := g.def.Selectors.Fields["post_url"]
+			postURLSel := g.def.Selectors.PostURL
 			doc.Find(g.def.Selectors.Item).Each(func(_ int, s *goquery.Selection) {
 				link := extractScalarField(s, postURLSel)
 				if link != "" {
@@ -259,26 +273,20 @@ func (g *genericEngine) extractTorrentsFromPage(ctx context.Context, link, refer
 
 // extractTorrentsFromDoc is the shared core that works on any *goquery.Selection
 func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery.Selection, link string) []schema.IndexedTorrent {
-	// Choose field map: detail page fields if detail mode, otherwise listing fields.
-	var fields map[string]FieldSelector
-	if g.def.Selectors.DetailPage.Enabled {
-		fields = g.def.Selectors.DetailPage.Fields
-	} else {
-		fields = g.def.Selectors.Fields
-	}
+	f := g.def.Selectors.DetailPage.Fields
 
-	title := extractScalarField(sel, fields["title"])
+	title := extractScalarField(sel, f.Title)
 
 	// Pass the raw href through GetIMDBLink so both direct imdb.com URLs and
 	// indirect patterns like opensubtitles "imdbid-NNNNN" are resolved.
-	imdbRaw := extractScalarField(sel, fields["imdb"])
+	imdbRaw := extractScalarField(sel, f.IMDB)
 	imdbLink, _ := handler.GetIMDBLink(imdbRaw)
 	if imdbLink == "" {
 		logging.Debug().Str("imdb_raw", imdbRaw).Msg("Failed to extract IMDB link from raw value")
 	}
 
 	// extract audio info using both built-in patterns and custom mappings
-	audioTexts := extractSliceField(sel, fields["audio"])
+	audioTexts := extractSliceField(sel, f.Audio)
 	var audio []schema.Audio
 	for _, text := range audioTexts {
 
@@ -299,14 +307,14 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 			}
 		}
 	}
-	if hasMappings(fields["audio"]) {
-		for _, v := range extractMappingsField(sel, fields["audio"]) {
+	if hasMappings(f.Audio) {
+		for _, v := range extractMappingsField(sel, f.Audio) {
 			audio = append(audio, schema.Audio(v))
 		}
 	}
 	audio = utils.DeduplicateAudio(audio)
 
-	sizeText := strings.Join(extractSliceField(sel, fields["size"]), " ")
+	sizeText := strings.Join(extractSliceField(sel, f.Size), " ")
 	sizes := utils.StableUniq(handler.FindSizesFromText(sizeText))
 	if len(sizes) == 0 {
 		logging.Debug().Str("size_text", sizeText).Strs("sizes", sizes).Msg("No sizes extracted from text")
@@ -314,22 +322,22 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 
 	// magnet_link: collect ALL hrefs from ALL selector items (plain + encoded).
 	var magnetLinks []string
-	for _, href := range extractSliceField(sel, fields["magnet_link"]) {
+	for _, href := range extractSliceField(sel, f.MagnetLink) {
 		if utils.IsMagnetLink(href) {
 			magnetLinks = append(magnetLinks, href)
 		}
 	}
 
-	date := extractDateField(sel, fields["date"])
-	year := extractScalarField(sel, fields["year"])
+	date := extractDateField(sel, f.Date)
+	year := extractScalarField(sel, f.Year)
 	if year == "" && date.Year() != 0 { // time.Time zero value has Year=1
 		year = fmt.Sprintf("%d", date.Year())
 	}
 
 	files := extractFilesField(sel, g.def.Selectors.DetailPage.Files)
 
-	htmlSeeds := extractIntField(sel, fields["seeds"])
-	htmlPeers := extractIntField(sel, fields["peers"])
+	htmlSeeds := extractIntField(sel, f.Seeds)
+	htmlPeers := extractIntField(sel, f.Peers)
 
 	type result struct {
 		t   schema.IndexedTorrent
@@ -353,7 +361,7 @@ func (g *genericEngine) extractTorrentsFromDoc(ctx context.Context, sel *goquery
 			magnetAudio := handler.GetAudioFromTitle(releaseTitle, audio)
 
 			var seed, peer int
-			if fields["seeds"] != nil && fields["peers"] != nil {
+			if len(f.Seeds) > 0 && len(f.Peers) > 0 {
 				seed = htmlSeeds
 				peer = htmlPeers
 			} else {
