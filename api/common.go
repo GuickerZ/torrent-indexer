@@ -189,7 +189,7 @@ func findYearFromText(text string, title string) (year string) {
 func findSizesFromText(text string) []string {
 	var sizes []string
 	// everything that ends with GB or MB, using ',' or '.' as decimal separator
-	re := regexp.MustCompile(`(\d+[\.,]?\d+) ?(GB|MB)`)
+	re := regexp.MustCompile(`(\d+[\.,]?(\d+)?) ?(GB|MB)`)
 	sizesMatch := re.FindAllStringSubmatch(text, -1)
 	if len(sizesMatch) > 0 {
 		for _, size := range sizesMatch {
