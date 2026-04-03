@@ -86,9 +86,9 @@ func (fs *FieldSelector) UnmarshalYAML(value *yaml.Node) error {
 // AudioPattern maps a regex to a schema.Audio value.
 type AudioPattern struct {
 	// Pattern is a regex matched against the raw text.
-	Pattern string `yaml:"pattern"`
+	Pattern string `yaml:"pattern" validate:"required"`
 	// Value is a schema.Audio constant, e.g. "Português", "Inglês", "Russo".
-	Value string `yaml:"value"`
+	Value string `yaml:"value" validate:"required"`
 }
 
 // FilesConfig describes how to extract a file list from a detail page.
@@ -106,7 +106,7 @@ type DetailPageFields struct {
 	Year       FieldSelector `yaml:"year"`
 	Audio      FieldSelector `yaml:"audio"`
 	Size       FieldSelector `yaml:"size"`
-	MagnetLink FieldSelector `yaml:"magnet_link"`
+	MagnetLink FieldSelector `yaml:"magnet_link" validate:"required"`
 	IMDB       FieldSelector `yaml:"imdb"`
 	Date       FieldSelector `yaml:"date"`
 	Seeds      FieldSelector `yaml:"seeds"`
@@ -117,15 +117,15 @@ type DetailPageFields struct {
 type DetailPageConfig struct {
 	// Enabled controls whether a second HTTP fetch is made for each item.
 	// When false, all fields must be extractable from the listing page itself.
-	Enabled bool             `yaml:"enabled"`
-	Fields  DetailPageFields `yaml:"fields"`
+	Enabled bool             `yaml:"enabled" validate:"required"`
+	Fields  DetailPageFields `yaml:"fields" validate:"required"`
 	Files   FilesConfig      `yaml:"files"`
 }
 
 // SelectorsConfig groups all CSS selectors for a definition.
 type SelectorsConfig struct {
 	// Item is the top-level list selector on the listing/search page.
-	Item string `yaml:"item"`
+	Item string `yaml:"item" validate:"required"`
 	// PostURL is the selector for the detail page URL of each item.
 	// Required when detail_page.enabled is true.
 	PostURL FieldSelector `yaml:"post_url"`
@@ -135,8 +135,8 @@ type SelectorsConfig struct {
 
 // IndexerDefinition is the full YAML schema for a single generic indexer.
 type IndexerDefinition struct {
-	ID    string `yaml:"id"`
-	Label string `yaml:"label"`
+	ID    string `yaml:"id"    validate:"required"`
+	Label string `yaml:"label" validate:"required"`
 	URL   string `yaml:"url"`
 	// SearchPattern is appended to URL for searches.
 	// Use {query} as the placeholder: "?s={query}" or "index.php?s={query}"
@@ -144,7 +144,7 @@ type IndexerDefinition struct {
 	// PagePattern is used for path-based pagination.
 	// Use {page} as the placeholder: "page/{page}" or "?paged={page}"
 	PagePattern string          `yaml:"page_pattern"`
-	Selectors   SelectorsConfig `yaml:"selectors"`
+	Selectors   SelectorsConfig `yaml:"selectors" validate:"required"`
 }
 
 var whitespaceRe = regexp.MustCompile(`\s+`)

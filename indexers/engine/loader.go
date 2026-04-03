@@ -10,15 +10,19 @@ import (
 
 	handler "github.com/felipemarinho97/torrent-indexer/api"
 	"github.com/felipemarinho97/torrent-indexer/cache"
+	"github.com/felipemarinho97/torrent-indexer/logging"
 	"github.com/felipemarinho97/torrent-indexer/magnet"
 	"github.com/felipemarinho97/torrent-indexer/monitoring"
 	"github.com/felipemarinho97/torrent-indexer/requester"
 	meilisearch "github.com/felipemarinho97/torrent-indexer/search"
+	"github.com/go-playground/validator/v10"
 	"gopkg.in/yaml.v3"
 )
 
 //go:embed definitions/*.yaml
-var bundledDefinitions embed.FS
+var BundledDefinitions embed.FS
+
+var validate = validator.New()
 
 // Load reads all bundled definitions first, then overlays any *.yaml files
 // found in customDir (if non-empty). A file in customDir whose base name matches
@@ -32,11 +36,28 @@ func Load(
 	si *meilisearch.SearchIndexer,
 	magnetAPI *magnet.MetadataClient,
 ) ([]Engine, error) {
-	// Collect raw YAML bytes keyed by filename; customDir entries win.
-	files := make(map[string][]byte)
+	parseAndAdd := func(rawDefs map[string]IndexerDefinition, name string, data []byte, warnOnOverride bool) {
+		var def IndexerDefinition
+		if err := yaml.Unmarshal(data, &def); err != nil {
+			logging.Warn().Err(err).Str("file", name).Msg("Skipping definition: failed to parse YAML")
+			return
+		}
+		if err := validate.Struct(def); err != nil {
+			logging.Warn().Err(err).Str("file", name).Msg("Skipping definition: validation failed")
+			return
+		}
+		if warnOnOverride {
+			if _, exists := rawDefs[def.ID]; exists {
+				logging.Warn().Str("id", def.ID).Str("file", name).Msg("Bundled definition overridden by custom definition")
+			}
+		}
+		rawDefs[def.ID] = def
+	}
 
-	// 1. Bundled definitions.
-	entries, err := fs.ReadDir(bundledDefinitions, "definitions")
+	rawDefs := make(map[string]IndexerDefinition)
+
+	// 1. Parse bundled definitions.
+	entries, err := fs.ReadDir(BundledDefinitions, "definitions")
 	if err != nil {
 		return nil, fmt.Errorf("reading bundled definitions: %w", err)
 	}
@@ -44,14 +65,14 @@ func Load(
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		data, err := bundledDefinitions.ReadFile("definitions/" + e.Name())
+		data, err := BundledDefinitions.ReadFile("definitions/" + e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("reading bundled %s: %w", e.Name(), err)
 		}
-		files[e.Name()] = data
+		parseAndAdd(rawDefs, e.Name(), data, false)
 	}
 
-	// 2. Overlay with user-provided definitions.
+	// 2. Parse and overlay user-provided definitions (logged when overriding by ID).
 	if customDir != "" {
 		dirEntries, err := os.ReadDir(customDir)
 		if err != nil && !os.IsNotExist(err) {
@@ -65,18 +86,8 @@ func Load(
 			if err != nil {
 				return nil, fmt.Errorf("reading %s: %w", e.Name(), err)
 			}
-			files[e.Name()] = data // replaces bundled definition if same filename
+			parseAndAdd(rawDefs, e.Name(), data, true)
 		}
-	}
-
-	// Parse all collected definitions.
-	rawDefs := make(map[string]IndexerDefinition)
-	for name, data := range files {
-		var def IndexerDefinition
-		if err := yaml.Unmarshal(data, &def); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", name, err)
-		}
-		rawDefs[def.ID] = def
 	}
 
 	// Build engines, applying env var URL overrides and skipping template definitions.
