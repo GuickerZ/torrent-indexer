@@ -151,6 +151,65 @@ func getTorrents(ctx context.Context, i *Indexer, link, referer string) ([]schem
 		magnetLinks = append(magnetLinks, ExtractedMagnet{Link: magnetLink, Context: ctxStr})
 	})
 
+	adwareHosts := map[string]struct{}{
+		"www.seuvideo.xyz":   {},
+		"www.systemads.org":  {},
+		"systemads.org":      {},
+		"superadsgo.xyz":     {},
+		"www.superadsgo.xyz": {},
+		"systemads.xyz":      {},
+		"www.systemads.xyz":  {},
+	}
+
+	// Process all links and check if hostname matches known ad redirect hosts
+	textContent.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
+		href, _ := s.Attr("href")
+		parsedURL, err := url.Parse(href)
+		if err != nil {
+			logging.Error().Err(err).Str("href", href).Msg("Failed to parse URL")
+			return
+		}
+
+		host := strings.ToLower(parsedURL.Hostname())
+		if _, ok := adwareHosts[host]; !ok {
+			return
+		}
+
+		// Fallback: Try resolving via FlareSolverr and look for magnet in HTML
+		doc, err := getDocument(ctx, i, href, referer)
+		if err != nil {
+			logging.Error().Err(err).Str("href", href).Msg("Failed to resolve ad link via FlareSolverr")
+			return
+		}
+
+		// Smart Extraction: Look for ANY URL with a suspicious ID parameter
+		htmlContent, _ := doc.Html()
+
+		smartRe := regexp.MustCompile(`https?://[^"'\s?]+\.(php|xyz|info|top)[^"'\s]*[?&](id|u|link)=([A-Za-z0-9+/=%]{30,})`)
+		smartMatches := smartRe.FindAllStringSubmatch(htmlContent, -1)
+
+		ctxStr := ExtractMagnetContext(s)
+
+		for _, match := range smartMatches {
+			if len(match) < 4 {
+				continue
+			}
+			recId := match[3]
+
+			decoded, err := utils.DecodeAdLink(recId)
+			if err == nil && strings.HasPrefix(decoded, "magnet:") {
+				magnetLinks = append(magnetLinks, ExtractedMagnet{Link: decoded, Context: ctxStr})
+			}
+		}
+
+		// Look for magnet links in the resolved page (direct magnets fallback)
+		doc.Find("a[href^=\"magnet:\"]").Each(func(_ int, elem *goquery.Selection) {
+			if magnetLink, ok := elem.Attr("href"); ok && strings.HasPrefix(magnetLink, "magnet:") {
+				magnetLinks = append(magnetLinks, ExtractedMagnet{Link: magnetLink, Context: ctxStr})
+			}
+		})
+	})
+
 	var audio []schema.Audio
 	var year string
 	var size []string

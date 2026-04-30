@@ -58,6 +58,7 @@ var GlobalPostProcessors = []PostProcessorFunc{
 
 type IndexersConfig struct {
 	FallbackTitleEnabled bool
+	DisabledIndexers     map[string]bool
 }
 
 func NewIndexers(
@@ -80,7 +81,7 @@ func NewIndexers(
 }
 
 func (i *Indexer) GetAllHandlersMap() map[string]http.HandlerFunc {
-	return map[string]http.HandlerFunc{
+	allHandlers := map[string]http.HandlerFunc{
 		"bludv":              i.HandlerBluDVIndexer,
 		"comando_torrents":   i.HandlerComandoIndexer,
 		"rede_torrent":       i.HandlerRedeTorrentIndexer,
@@ -88,6 +89,14 @@ func (i *Indexer) GetAllHandlersMap() map[string]http.HandlerFunc {
 		"torrent-dos-filmes": i.HandlerTorrentDosFilmesIndexer,
 		"vaca_torrent":       i.HandlerVacaTorrentIndexer,
 	}
+
+	filteredHandlers := make(map[string]http.HandlerFunc)
+	for name, handler := range allHandlers {
+		if !i.config.DisabledIndexers[name] {
+			filteredHandlers[name] = handler
+		}
+	}
+	return filteredHandlers
 }
 
 func (i *Indexer) GetIndexerNames() []string {

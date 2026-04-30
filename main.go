@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	handler "github.com/felipemarinho97/torrent-indexer/api"
@@ -110,8 +111,16 @@ func main() {
 		logging.Error().Err(err).Msg("Failed to parse long-lived cache expiration")
 	}
 
+	disabledIndexers := make(map[string]bool)
+	if disabledEnv := os.Getenv("TORRENT_INDEXER_DISABLED_INDEXERS"); disabledEnv != "" {
+		for _, name := range strings.Split(disabledEnv, ",") {
+			disabledIndexers[strings.TrimSpace(name)] = true
+		}
+	}
+
 	icfg := handler.IndexersConfig{
 		FallbackTitleEnabled: os.Getenv("FALLBACK_TITLE_ENABLED") == "true",
+		DisabledIndexers:     disabledIndexers,
 	}
 
 	indexers := handler.NewIndexers(icfg, redis, metrics, req, searchIndex, magnetMetadataAPI)
