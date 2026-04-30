@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/felipemarinho97/torrent-indexer/schema"
 	meilisearch "github.com/felipemarinho97/torrent-indexer/search"
 )
 
@@ -36,39 +37,60 @@ func NewMeilisearchHandler(module *meilisearch.SearchIndexer) *MeilisearchHandle
 	return &MeilisearchHandler{Module: module}
 }
 
+// MultiSearchRequest represents the request body for multiple searches
+type MultiSearchRequest struct {
+	Queries []string `json:"queries"`
+	Limit   int      `json:"limit,omitempty"`
+}
+
 // SearchTorrentHandler handles the searching of torrent items.
 func (h *MeilisearchHandler) SearchTorrentHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		query = time.Now().Format("2006-01-02") // needed for prowlar/jackett empty queries
-	}
+	var queries []string
+	limit := 10
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 10 // Default limit
-	if limitStr != "" {
-		var err error
-		limit, err = strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
-			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
+	if r.Method == http.MethodGet {
+		queries = r.URL.Query()["q"]
+		if len(queries) == 0 {
+			// needed for prowlar/jackett empty queries
+			queries = []string{time.Now().Format("2006-01-02")}
+		}
+		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+				limit = l
+			}
+		}
+	} else if r.Method == http.MethodPost {
+		var req MultiSearchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
+		}
+		queries = req.Queries
+		if req.Limit > 0 {
+			limit = req.Limit
 		}
 	}
 
-	results, err := h.Module.SearchTorrent(query, limit)
+	allResultsArrays, err := h.Module.MultiSearchTorrent(queries, limit)
 	if err != nil {
-		http.Error(w, "Failed to search torrents", http.StatusInternalServerError)
+		http.Error(w, "Failed to perform search", http.StatusInternalServerError)
 		return
+	}
+
+	var allResults []schema.IndexedTorrent
+	for _, results := range allResultsArrays {
+		allResults = append(allResults, results...)
 	}
 
 	// Format response to match indexers structure
 	response := map[string]interface{}{
-		"results": results,
-		"count":   len(results),
+		"results": allResults,
+		"count":   len(allResults),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
