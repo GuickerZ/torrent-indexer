@@ -163,132 +163,6 @@ func (t *SearchIndexer) SearchTorrent(query string, limit int) ([]schema.Indexed
 	return result.Hits, nil
 }
 
-// MultiSearchTorrent searches indexed torrents using multiple queries at once.
-func (t *SearchIndexer) MultiSearchTorrent(queries []string, limit int) ([][]schema.IndexedTorrent, error) {
-	url := fmt.Sprintf("%s/multi-search", t.BaseURL)
-	if limit > 100 {
-		limit = 100
-	}
-    
-	var requests []map[string]interface{}
-	for _, q := range queries {
-		requests = append(requests, map[string]interface{}{
-			"indexUid": t.IndexName,
-			"q":        q,
-			"limit":    limit,
-		})
-	}
-
-	requestBody := map[string]interface{}{
-		"queries": requests,
-	}
-
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal multi-search query: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if t.APIKey != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.APIKey))
-	}
-
-	resp, err := t.Client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("multi-search failed: %s", body)
-	}
-
-	var result struct {
-		Results []struct {
-			Hits []schema.IndexedTorrent `json:"hits"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to parse multi-search response: %w", err)
-	}
-
-	var allHits [][]schema.IndexedTorrent
-	for _, res := range result.Results {
-		allHits = append(allHits, res.Hits)
-	}
-
-	return allHits, nil
-}
-
-// UpdateSearchableAttributes sets the searchable attributes for the index.
-func (t *SearchIndexer) UpdateSearchableAttributes(attributes []string) error {
-	url := fmt.Sprintf("%s/indexes/%s/settings/searchable-attributes", t.BaseURL, t.IndexName)
-
-	jsonData, err := json.Marshal(attributes)
-	if err != nil {
-		return fmt.Errorf("failed to marshal attributes: %w", err)
-	}
-
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if t.APIKey != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.APIKey))
-	}
-
-	resp, err := t.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update searchable attributes: %s", body)
-	}
-
-	return nil
-}
-
-// UpdateSynonyms sets the synonyms for the index.
-func (t *SearchIndexer) UpdateSynonyms(synonyms map[string][]string) error {
-	url := fmt.Sprintf("%s/indexes/%s/settings/synonyms", t.BaseURL, t.IndexName)
-
-	jsonData, err := json.Marshal(synonyms)
-	if err != nil {
-		return fmt.Errorf("failed to marshal synonyms: %w", err)
-	}
-
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if t.APIKey != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", t.APIKey))
-	}
-
-	resp, err := t.Client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update synonyms: %s", body)
-	}
-
-	return nil
-}
-
 // GetStats retrieves statistics about the Meilisearch index including document count.
 // This method can be used for health checks and monitoring.
 func (t *SearchIndexer) GetStats() (*IndexStats, error) {
@@ -351,4 +225,66 @@ func (t *SearchIndexer) GetDocumentCount() (int64, error) {
 		return 0, err
 	}
 	return stats.NumberOfDocuments, nil
+}
+
+// UpdateSearchableAttributes configures which fields Meilisearch uses for full-text search.
+func (t *SearchIndexer) UpdateSearchableAttributes(attributes []string) error {
+	url := fmt.Sprintf("%s/indexes/%s/settings/searchable-attributes", t.BaseURL, t.IndexName)
+
+	jsonData, err := json.Marshal(attributes)
+	if err != nil {
+		return fmt.Errorf("failed to marshal searchable attributes: %w", err)
+	}
+
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if t.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+t.APIKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("meilisearch returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// UpdateSynonyms configures synonym mappings in Meilisearch for better search results.
+func (t *SearchIndexer) UpdateSynonyms(synonyms map[string][]string) error {
+	url := fmt.Sprintf("%s/indexes/%s/settings/synonyms", t.BaseURL, t.IndexName)
+
+	jsonData, err := json.Marshal(synonyms)
+	if err != nil {
+		return fmt.Errorf("failed to marshal synonyms: %w", err)
+	}
+
+	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if t.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+t.APIKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("meilisearch returned status %d", resp.StatusCode)
+	}
+	return nil
 }

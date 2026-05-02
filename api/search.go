@@ -3,9 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
+	edlib "github.com/hbollon/go-edlib"
 	"github.com/felipemarinho97/torrent-indexer/schema"
 	meilisearch "github.com/felipemarinho97/torrent-indexer/search"
 )
@@ -37,60 +40,54 @@ func NewMeilisearchHandler(module *meilisearch.SearchIndexer) *MeilisearchHandle
 	return &MeilisearchHandler{Module: module}
 }
 
-// MultiSearchRequest represents the request body for multiple searches
-type MultiSearchRequest struct {
-	Queries []string `json:"queries"`
-	Limit   int      `json:"limit,omitempty"`
-}
-
 // SearchTorrentHandler handles the searching of torrent items.
 func (h *MeilisearchHandler) SearchTorrentHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var queries []string
-	limit := 10
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		query = time.Now().Format("2006-01-02") // needed for prowlar/jackett empty queries
+	}
 
-	if r.Method == http.MethodGet {
-		queries = r.URL.Query()["q"]
-		if len(queries) == 0 {
-			// needed for prowlar/jackett empty queries
-			queries = []string{time.Now().Format("2006-01-02")}
-		}
-		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-			if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-				limit = l
-			}
-		}
-	} else if r.Method == http.MethodPost {
-		var req MultiSearchRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100 // Default limit per query
+	if limitStr != "" {
+		var err error
+		limit, err = strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
 			return
-		}
-		queries = req.Queries
-		if req.Limit > 0 {
-			limit = req.Limit
 		}
 	}
 
-	allResultsArrays, err := h.Module.MultiSearchTorrent(queries, limit)
+	// Cap at 100 per query to prevent abuse
+	if limit > 100 {
+		limit = 100
+	}
+
+	results, err := h.Module.SearchTorrent(query, limit)
 	if err != nil {
-		http.Error(w, "Failed to perform search", http.StatusInternalServerError)
+		http.Error(w, "Failed to search torrents", http.StatusInternalServerError)
 		return
 	}
 
-	var allResults []schema.IndexedTorrent
-	for _, results := range allResultsArrays {
-		allResults = append(allResults, results...)
+	// Calculate similarity scores and sort by highest similarity first
+	qLower := strings.ToLower(query)
+	for i := range results {
+		tLower := strings.ToLower(results[i].Title)
+		results[i].Similarity = edlib.JaccardSimilarity(tLower, qLower, 2)
 	}
+	slices.SortFunc(results, func(a, b schema.IndexedTorrent) int {
+		return int((b.Similarity - a.Similarity) * 1000000)
+	})
 
 	// Format response to match indexers structure
 	response := map[string]interface{}{
-		"results": allResults,
-		"count":   len(allResults),
+		"results": results,
+		"count":   len(results),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
