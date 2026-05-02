@@ -41,53 +41,85 @@ func NewMeilisearchHandler(module *meilisearch.SearchIndexer) *MeilisearchHandle
 }
 
 // SearchTorrentHandler handles the searching of torrent items.
+// Supports multiple queries via GET ?q=a&q=b (each limited to perQueryLimit).
 func (h *MeilisearchHandler) SearchTorrentHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		query = time.Now().Format("2006-01-02") // needed for prowlar/jackett empty queries
+	queries := r.URL.Query()["q"]
+	if len(queries) == 0 || (len(queries) == 1 && queries[0] == "") {
+		queries = []string{time.Now().Format("2006-01-02")} // needed for prowlar/jackett empty queries
 	}
 
 	limitStr := r.URL.Query().Get("limit")
-	limit := 100 // Default limit per query
+	perQueryLimit := 100 // Default limit per query
 	if limitStr != "" {
 		var err error
-		limit, err = strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
+		perQueryLimit, err = strconv.Atoi(limitStr)
+		if err != nil || perQueryLimit <= 0 {
 			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
 			return
 		}
 	}
 
 	// Cap at 100 per query to prevent abuse
-	if limit > 100 {
-		limit = 100
+	if perQueryLimit > 100 {
+		perQueryLimit = 100
 	}
 
-	results, err := h.Module.SearchTorrent(query, limit)
-	if err != nil {
-		http.Error(w, "Failed to search torrents", http.StatusInternalServerError)
-		return
+	// Search each query with the per-query limit, then merge + deduplicate
+	seen := make(map[string]bool)
+	var allResults []schema.IndexedTorrent
+
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+
+		results, err := h.Module.SearchTorrent(query, perQueryLimit)
+		if err != nil {
+			continue
+		}
+
+		// Calculate similarity scores against this specific query
+		qLower := strings.ToLower(query)
+		for i := range results {
+			tLower := strings.ToLower(results[i].Title)
+			sim := edlib.JaccardSimilarity(tLower, qLower, 2)
+			// Keep the highest similarity if we see the same torrent from multiple queries
+			if results[i].Similarity < sim {
+				results[i].Similarity = sim
+			}
+		}
+
+		// Deduplicate by info_hash
+		for _, r := range results {
+			key := r.InfoHash
+			if key == "" {
+				key = r.MagnetLink
+			}
+			if key != "" && seen[key] {
+				continue
+			}
+			if key != "" {
+				seen[key] = true
+			}
+			allResults = append(allResults, r)
+		}
 	}
 
-	// Calculate similarity scores and sort by highest similarity first
-	qLower := strings.ToLower(query)
-	for i := range results {
-		tLower := strings.ToLower(results[i].Title)
-		results[i].Similarity = edlib.JaccardSimilarity(tLower, qLower, 2)
-	}
-	slices.SortFunc(results, func(a, b schema.IndexedTorrent) int {
+	// Sort all merged results by highest similarity first
+	slices.SortFunc(allResults, func(a, b schema.IndexedTorrent) int {
 		return int((b.Similarity - a.Similarity) * 1000000)
 	})
 
 	// Format response to match indexers structure
 	response := map[string]interface{}{
-		"results": results,
-		"count":   len(results),
+		"results": allResults,
+		"count":   len(allResults),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
